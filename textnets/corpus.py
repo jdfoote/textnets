@@ -3,6 +3,7 @@
 """Implements the features relating to language."""
 
 import os
+from warnings import warn
 from typing import Callable, Optional, Union, List
 
 import spacy
@@ -12,7 +13,7 @@ from glob import glob
 from toolz import compose, partial, identity
 
 
-class Corpus:
+class Corpus(pd.DataFrame):
     """
     Corpus of labeled documents.
 
@@ -26,21 +27,37 @@ class Corpus:
         none is specified, the first column with strings is assumed to
         contain document texts.
     lang : str, optional
-        The langugage model to be used. Defaults to ``en_core_web_sm``.
+        The langugage model to use (default: ``en_core_web_sm``).
     """
+
+    _metadata = ["_doc_col", "_lang", "from_files", "tokenized",
+            "noun_phrases", "_return_tidy_text", "documents", "object_cols"]
 
     def __init__(
         self,
-        data: pd.DataFrame,
-        doc_col: Optional[str] = None,
-        lang: str = "en_core_web_sm",
+        *args,
+        **kwargs
     ):
-        nlp = spacy.load(lang, disable=["ner", "textcat"])
-        self._df = data.copy()
-        self._df.index = self._df.index.set_names(["label"])
+        doc_col: Optional[str] = kwargs.pop("doc_col", None)
+        lang: str = kwargs.pop("lang", "en_core_web_sm")
+        kwargs.setdefault("copy", True)
+        super(Corpus, self).__init__(*args, **kwargs)
         if not doc_col:
-            doc_col = self._df.select_dtypes(include="object").columns[0]
-        self._df["nlp"] = self._df[doc_col].map(_normalize_whitespace).map(nlp)
+            if self.object_cols.empty:
+                raise NoDocumentColumn
+            else:
+                doc_col = self.object_cols[0]
+                warn(f"No document column specified; using {doc_col}.")
+        else:
+            if doc_col not in self.object_cols:
+                warn(f"Column {doc_col} does not appear to contain text.")
+        self._doc_col = doc_col
+        self._lang = lang
+        self.index = self.index.set_names(["label"])
+
+    @property
+    def object_cols(self):
+        return self.select_dtypes(include="object").columns
 
     @classmethod
     def from_files(
@@ -59,6 +76,10 @@ class Corpus:
         df = pd.DataFrame({"path": files}, index=doc_labels)
         df["raw"] = df["path"].map(_read_file)
         return cls(df, doc_col="raw", lang=lang)
+
+    @property
+    def documents(self):
+        return self[self._doc_col]
 
     def tokenized(
         self,
@@ -94,6 +115,7 @@ class Corpus:
             A data frame with document labels (index), tokens (term), and
             per-document counts (n).
         """
+        self._process()
         func = compose(
             partial(_remove_additional, token_list=remove) if remove else identity,
             _lower if lower else identity,
@@ -119,16 +141,22 @@ class Corpus:
             A data frame with document labels (index), noun phrases
             (term), and per-document counts (n).
         """
+        self._process()
         func = compose(
             partial(_remove_additional, token_list=remove) if remove else identity,
             _noun_chunks,
         )
         return self._return_tidy_text(func)
 
+    def _process(self):
+        if not "nlp" in self.columns:
+            nlp = spacy.load(self._lang, disable=["ner", "textcat"])
+            self["nlp"] = self.documents.map(_normalize_whitespace).map(nlp)
+
     def _return_tidy_text(self, func: Callable[[Doc], List[str]]) -> pd.DataFrame:
         return (
             pd.melt(
-                self._df["nlp"].map(func).apply(pd.Series).reset_index(),
+                self["nlp"].map(func).apply(pd.Series).reset_index(),
                 id_vars="label",
                 value_name="term",
             )
@@ -138,6 +166,10 @@ class Corpus:
             .reset_index()
             .set_index("label")
         )
+
+    @property
+    def _constructor(self):
+        return Corpus
 
 
 def _read_file(file_name: str) -> str:
@@ -193,3 +225,8 @@ def _lower(doc: List[str]) -> List[str]:
 
 def _remove_additional(doc: List[str], token_list: List[str]) -> List[str]:
     return [s for s in doc if s not in token_list]
+
+
+def NoDocumentColumn(Exception):
+    """Raised when no document column can be found."""
+    pass
