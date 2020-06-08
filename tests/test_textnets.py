@@ -24,8 +24,8 @@ def test_corpus():
     """Test Corpus class using small data frame."""
 
     c = Corpus(examples.moon_landing)
-    assert c._df.shape[0] == 7
-    assert c._df.shape[1] == 2
+    assert c.shape[0] == 7
+    assert c.shape[1] == 1
 
     noun_phrases = c.noun_phrases()
     assert set(noun_phrases.columns) == {"term", "n"}
@@ -55,7 +55,6 @@ def test_textnet():
     tn_np = Textnet(noun_phrases)
     assert tn_np.graph.vcount() > 0
     assert tn_np.graph.ecount() > 0
-    assert set(tn_np._df.columns) == {"term", "n", "tf_idf"}
     g_np_groups = tn_np.project(node_type="doc")
     assert g_np_groups.vcount() > 0
     assert g_np_groups.ecount() > 0
